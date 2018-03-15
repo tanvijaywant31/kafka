@@ -369,6 +369,49 @@ class AdminClient(val time: Time,
     (response.error, response.tokens().asScala.toList)
   }
 
+  def deleteConsumerGroups(groups: List[String]): Map[String, Errors] = {
+
+    def coordinatorLookup(group: String): Either[Node, Errors] = {
+      try {
+        Left(findCoordinator(group))
+      } catch {
+        case e: Throwable =>
+          if (e.isInstanceOf[TimeoutException])
+            Right(Errors.COORDINATOR_NOT_AVAILABLE)
+          else
+            Right(Errors.forException(e))
+      }
+    }
+
+    var errors: Map[String, Errors] = Map()
+    var groupsPerCoordinator: Map[Node, List[String]] = Map()
+
+    groups.foreach { group =>
+      coordinatorLookup(group) match {
+        case Right(error) =>
+          errors += group -> error
+        case Left(coordinator) =>
+          groupsPerCoordinator.get(coordinator) match {
+            case Some(gList) =>
+              val gListNew = group :: gList
+              groupsPerCoordinator += coordinator -> gListNew
+            case None =>
+              groupsPerCoordinator += coordinator -> List(group)
+          }
+      }
+    }
+
+    groupsPerCoordinator.foreach { case (coordinator, groups) =>
+      val responseBody = send(coordinator, ApiKeys.DELETE_GROUPS, new DeleteGroupsRequest.Builder(groups.toSet.asJava))
+      val response = responseBody.asInstanceOf[DeleteGroupsResponse]
+      groups.foreach {
+        case group if response.hasError(group) => errors += group -> response.errors.get(group)
+        case group => errors += group -> Errors.NONE
+      }
+    }
+
+    errors
+  }
 
   def close() {
     running = false
@@ -485,18 +528,20 @@ object AdminClient {
     val bootstrapCluster = Cluster.bootstrap(brokerAddresses)
     metadata.update(bootstrapCluster, Collections.emptySet(), 0)
 
+    val clientId = "admin-" + AdminClientIdSequence.getAndIncrement()
+
     val selector = new Selector(
       DefaultConnectionMaxIdleMs,
       metrics,
       time,
       "admin",
       channelBuilder,
-      new LogContext())
+      new LogContext(String.format("[Producer clientId=%s] ", clientId)))
 
     val networkClient = new NetworkClient(
       selector,
       metadata,
-      "admin-" + AdminClientIdSequence.getAndIncrement(),
+      clientId,
       DefaultMaxInFlightRequestsPerConnection,
       DefaultReconnectBackoffMs,
       DefaultReconnectBackoffMax,
@@ -506,10 +551,10 @@ object AdminClient {
       time,
       true,
       new ApiVersions,
-      new LogContext())
+      new LogContext(String.format("[NetworkClient clientId=%s] ", clientId)))
 
     val highLevelClient = new ConsumerNetworkClient(
-      new LogContext(),
+      new LogContext(String.format("[ConsumerNetworkClient clientId=%s] ", clientId)),
       networkClient,
       metadata,
       time,

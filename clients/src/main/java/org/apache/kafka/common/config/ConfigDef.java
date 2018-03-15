@@ -877,7 +877,9 @@ public class ConfigDef {
         }
 
         public String toString() {
-            if (min == null)
+            if (min == null && max == null)
+                return "[...]";
+            else if (min == null)
                 return "[...," + max + "]";
             else if (max == null)
                 return "[" + min + ",...]";
@@ -937,6 +939,35 @@ public class ConfigDef {
         }
     }
 
+    public static class NonNullValidator implements Validator {
+        @Override
+        public void ensureValid(String name, Object value) {
+            if (value == null) {
+                // Pass in the string null to avoid the findbugs warning
+                throw new ConfigException(name, "null", "entry must be non null");
+            }
+        }
+    }
+
+    public static class CompositeValidator implements Validator {
+        private final List<Validator> validators;
+
+        private CompositeValidator(List<Validator> validators) {
+            this.validators = Collections.unmodifiableList(validators);
+        }
+
+        public static CompositeValidator of(Validator... validators) {
+            return new CompositeValidator(Arrays.asList(validators));
+        }
+
+        @Override
+        public void ensureValid(String name, Object value) {
+            for (Validator validator: validators) {
+                validator.ensureValid(name, value);
+            }
+        }
+    }
+
     public static class NonEmptyString implements Validator {
 
         @Override
@@ -950,6 +981,40 @@ public class ConfigDef {
         @Override
         public String toString() {
             return "non-empty string";
+        }
+    }
+
+    public static class NonEmptyStringWithoutControlChars implements Validator {
+
+        public static NonEmptyStringWithoutControlChars nonEmptyStringWithoutControlChars() {
+            return new NonEmptyStringWithoutControlChars();
+        }
+
+        @Override
+        public void ensureValid(String name, Object value) {
+            String s = (String) value;
+
+            if (s == null) {
+                // This can happen during creation of the config object due to no default value being defined for the
+                // name configuration - a missing name parameter is caught when checking for mandatory parameters,
+                // thus we can ok a null value here
+                return;
+            } else if (s.isEmpty()) {
+                throw new ConfigException(name, value, "String may not be empty");
+            }
+
+            // Check name string for illegal characters
+            ArrayList<Integer> foundIllegalCharacters = new ArrayList<>();
+
+            for (int i = 0; i < s.length(); i++) {
+                if (Character.isISOControl(s.codePointAt(i))) {
+                    foundIllegalCharacters.add(s.codePointAt(i));
+                }
+            }
+
+            if (!foundIllegalCharacters.isEmpty()) {
+                throw new ConfigException(name, value, "String may not contain control sequences but had the following ASCII chars: " + Utils.join(foundIllegalCharacters, ", "));
+            }
         }
     }
 
@@ -1028,16 +1093,40 @@ public class ConfigDef {
     }
 
     public String toHtmlTable() {
+        return toHtmlTable(Collections.<String, String>emptyMap());
+    }
+
+    private void addHeader(StringBuilder builder, String headerName) {
+        builder.append("<th>");
+        builder.append(headerName);
+        builder.append("</th>\n");
+    }
+
+    private void addColumnValue(StringBuilder builder, String value) {
+        builder.append("<td>");
+        builder.append(value);
+        builder.append("</td>");
+    }
+
+    /**
+     * Converts this config into an HTML table that can be embedded into docs.
+     * If <code>dynamicUpdateModes</code> is non-empty, a "Dynamic Update Mode" column
+     * will be included n the table with the value of the update mode. Default
+     * mode is "read-only".
+     * @param dynamicUpdateModes Config name -> update mode mapping
+     */
+    public String toHtmlTable(Map<String, String> dynamicUpdateModes) {
+        boolean hasUpdateModes = !dynamicUpdateModes.isEmpty();
         List<ConfigKey> configs = sortedConfigs();
         StringBuilder b = new StringBuilder();
         b.append("<table class=\"data-table\"><tbody>\n");
         b.append("<tr>\n");
         // print column headers
         for (String headerName : headers()) {
-            b.append("<th>");
-            b.append(headerName);
-            b.append("</th>\n");
+            addHeader(b, headerName);
         }
+        if (hasUpdateModes)
+            addHeader(b, "Dynamic Update Mode");
         b.append("</tr>\n");
         for (ConfigKey key : configs) {
             if (key.internalConfig) {
@@ -1046,9 +1135,14 @@ public class ConfigDef {
             b.append("<tr>\n");
             // print column values
             for (String headerName : headers()) {
-                b.append("<td>");
-                b.append(getConfigValue(key, headerName));
+                addColumnValue(b, getConfigValue(key, headerName));
                 b.append("</td>");
+            }
+            if (hasUpdateModes) {
+                String updateMode = dynamicUpdateModes.get(key.name);
+                if (updateMode == null)
+                    updateMode = "read-only";
+                addColumnValue(b, updateMode);
             }
             b.append("</tr>\n");
         }

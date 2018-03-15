@@ -26,6 +26,7 @@ import org.apache.kafka.trogdor.task.TaskWorker;
 
 import java.util.Collections;
 import java.util.Map;
+import java.util.TreeMap;
 import java.util.Set;
 
 /**
@@ -36,6 +37,7 @@ public class ProduceBenchSpec extends TaskSpec {
     private final String bootstrapServers;
     private final int targetMessagesPerSec;
     private final int maxMessages;
+    private final int messageSize;
     private final Map<String, String> producerConf;
     private final int totalTopics;
     private final int activeTopics;
@@ -47,15 +49,17 @@ public class ProduceBenchSpec extends TaskSpec {
                          @JsonProperty("bootstrapServers") String bootstrapServers,
                          @JsonProperty("targetMessagesPerSec") int targetMessagesPerSec,
                          @JsonProperty("maxMessages") int maxMessages,
+                         @JsonProperty("messageSize") int messageSize,
                          @JsonProperty("producerConf") Map<String, String> producerConf,
                          @JsonProperty("totalTopics") int totalTopics,
                          @JsonProperty("activeTopics") int activeTopics) {
         super(startMs, durationMs);
-        this.producerNode = producerNode;
-        this.bootstrapServers = bootstrapServers;
+        this.producerNode = (producerNode == null) ? "" : producerNode;
+        this.bootstrapServers = (bootstrapServers == null) ? "" : bootstrapServers;
         this.targetMessagesPerSec = targetMessagesPerSec;
         this.maxMessages = maxMessages;
-        this.producerConf = producerConf;
+        this.messageSize = (messageSize == 0) ? PayloadGenerator.DEFAULT_MESSAGE_SIZE : messageSize;
+        this.producerConf = (producerConf == null) ? new TreeMap<String, String>() : producerConf;
         this.totalTopics = totalTopics;
         this.activeTopics = activeTopics;
     }
@@ -78,6 +82,11 @@ public class ProduceBenchSpec extends TaskSpec {
     @JsonProperty
     public int maxMessages() {
         return maxMessages;
+    }
+
+    @JsonProperty
+    public int messageSize() {
+        return messageSize;
     }
 
     @JsonProperty

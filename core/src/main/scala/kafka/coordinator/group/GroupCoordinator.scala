@@ -338,6 +338,54 @@ class GroupCoordinator(val brokerId: Int,
     }
   }
 
+  def handleDeleteGroups(groupIds: Set[String]): Map[String, Errors] = {
+    if (!isActive.get) {
+      groupIds.map(_ -> Errors.COORDINATOR_NOT_AVAILABLE).toMap
+    } else {
+      var groupErrors: Map[String, Errors] = Map()
+      var eligibleGroups: Seq[GroupMetadata] = Seq()
+
+      groupIds.foreach { groupId =>
+        if (!validGroupId(groupId))
+          groupErrors += groupId -> Errors.INVALID_GROUP_ID
+        else if (!isCoordinatorForGroup(groupId))
+          groupErrors += groupId -> Errors.NOT_COORDINATOR
+        else if (isCoordinatorLoadInProgress(groupId))
+          groupErrors += groupId -> Errors.COORDINATOR_LOAD_IN_PROGRESS
+        else {
+          groupManager.getGroup(groupId) match {
+            case None =>
+              groupErrors += groupId ->
+                (if (groupManager.groupNotExists(groupId)) Errors.GROUP_ID_NOT_FOUND else Errors.NOT_COORDINATOR)
+            case Some(group) =>
+              group.inLock {
+                group.currentState match {
+                  case Dead =>
+                    groupErrors += groupId ->
+                      (if (groupManager.groupNotExists(groupId)) Errors.GROUP_ID_NOT_FOUND else Errors.NOT_COORDINATOR)
+                  case Empty =>
+                    group.transitionTo(Dead)
+                    eligibleGroups :+= group
+                  case _ =>
+                    groupErrors += groupId -> Errors.NON_EMPTY_GROUP
+                }
+              }
+          }
+        }
+      }
+
+      if (eligibleGroups.nonEmpty) {
+        val offsetsRemoved = groupManager.cleanupGroupMetadata(eligibleGroups, group => {
+          group.removeAllOffsets()
+        })
+        groupErrors ++= eligibleGroups.map(_.groupId -> Errors.NONE).toMap
+        info(s"The following groups were deleted: ${eligibleGroups.map(_.groupId).mkString(", ")}. A total of $offsetsRemoved offsets were removed.")
+      }
+
+      groupErrors
+    }
+  }
+
   def handleHeartbeat(groupId: String,
                       memberId: String,
                       generationId: Int,
@@ -522,7 +570,10 @@ class GroupCoordinator(val brokerId: Int,
   }
 
   def handleDeletedPartitions(topicPartitions: Seq[TopicPartition]) {
-    groupManager.cleanupGroupMetadata(Some(topicPartitions))
+    val offsetsRemoved = groupManager.cleanupGroupMetadata(groupManager.currentGroups, group => {
+      group.removeOffsets(topicPartitions)
+    })
+    info(s"Removed $offsetsRemoved offsets associated with deleted partitions: ${topicPartitions.mkString(", ")}.")
   }
 
   private def validateGroup(groupId: String): Option[Errors] = {
